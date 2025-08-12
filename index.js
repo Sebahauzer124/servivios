@@ -1,18 +1,35 @@
-const express = require('express');
 const crypto = require('crypto');
-const app = express();
-app.use(express.json());
+const axios = require('axios');
 
-app.post('/sign', (req, res) => {
-  const { query, secret } = req.body;
-  if (!query || !secret) {
-    return res.status(400).json({ error: 'Faltan query o secret' });
+require('dotenv').config();
+
+const apiKey = process.env.KUCOIN_API_KEY;
+const apiSecret = process.env.KUCOIN_API_SECRET;
+const passphrase = process.env.KUCOIN_API_PASSPHRASE;
+
+const timestamp = Date.now().toString();
+const method = 'GET';
+const requestPath = '/api/v1/accounts';
+const body = '';
+
+const stringToSign = timestamp + method + requestPath + body;
+
+const signature = crypto.createHmac('sha256', apiSecret).update(stringToSign).digest('base64');
+const encodedPassphrase = crypto.createHmac('sha256', apiSecret).update(passphrase).digest('base64');
+
+axios.get('https://api.kucoin.com' + requestPath, {
+  headers: {
+    'KC-API-KEY': apiKey,
+    'KC-API-SIGN': signature,
+    'KC-API-TIMESTAMP': timestamp,
+    'KC-API-PASSPHRASE': encodedPassphrase,
+    'KC-API-KEY-VERSION': '2',
+    'Content-Type': 'application/json'
   }
-  const signature = crypto.createHmac('sha256', secret).update(query).digest('hex');
-  res.json({ signature });
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Microservicio corriendo en puerto ${PORT}`);
+})
+.then(response => {
+  console.log(response.data);
+})
+.catch(error => {
+  console.error(error.response ? error.response.data : error.message);
 });
