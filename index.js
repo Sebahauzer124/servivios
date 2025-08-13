@@ -10,15 +10,18 @@ const apiKey = process.env.KUCOIN_API_KEY;
 const apiSecret = process.env.KUCOIN_API_SECRET;
 const passphrase = process.env.KUCOIN_API_PASSPHRASE;
 
+// Función para generar firma
 function getSignature(timestamp, method, requestPath, body, secret) {
   const prehash = timestamp + method + requestPath + body;
   return crypto.createHmac('sha256', secret).update(prehash).digest('base64');
 }
 
+// Función para codificar passphrase
 function getPassphrase(secret, passphrase) {
   return crypto.createHmac('sha256', secret).update(passphrase).digest('base64');
 }
 
+// Obtener balance de una moneda
 async function getBalance(currency) {
   const timestamp = Date.now().toString();
   const method = 'GET';
@@ -90,7 +93,14 @@ app.post('/buy', async (req, res) => {
     const method = 'POST';
     const requestPath = '/api/v1/orders';
 
-    const body = JSON.stringify({ symbol, side: 'buy', price, size, type });
+    const body = JSON.stringify({
+      clientOid: Date.now().toString(), // ID único
+      symbol,
+      side: 'buy',
+      price,
+      size,
+      type
+    });
 
     const signature = getSignature(timestamp, method, requestPath, body, apiSecret);
     const encodedPassphrase = getPassphrase(apiSecret, passphrase);
@@ -132,7 +142,14 @@ app.post('/sell', async (req, res) => {
     const method = 'POST';
     const requestPath = '/api/v1/orders';
 
-    const body = JSON.stringify({ symbol, side: 'sell', price, size, type });
+    const body = JSON.stringify({
+      clientOid: Date.now().toString(), // ID único
+      symbol,
+      side: 'sell',
+      price,
+      size,
+      type
+    });
 
     const signature = getSignature(timestamp, method, requestPath, body, apiSecret);
     const encodedPassphrase = getPassphrase(apiSecret, passphrase);
