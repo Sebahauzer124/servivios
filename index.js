@@ -6,6 +6,7 @@ require('dotenv').config();
 const app = express();
 app.use(express.json());
 
+// --- API Keys ---
 const apiKey = process.env.KUCOIN_API_KEY;
 const apiSecret = process.env.KUCOIN_API_SECRET;
 const passphrase = process.env.KUCOIN_API_PASSPHRASE;
@@ -35,15 +36,12 @@ async function kucoinRequest(method, requestPath, body = '') {
       'KC-API-PASSPHRASE': encodedPassphrase,
       'KC-API-KEY-VERSION': '2',
       'Content-Type': 'application/json'
-    },
+    }
   };
 
-  if (method === 'GET') {
-    return axios(options);
-  } else {
-    options.data = body;
-    return axios(options);
-  }
+  if (method === 'GET') return axios(options);
+  options.data = body;
+  return axios(options);
 }
 
 async function getBalance(currency) {
@@ -84,10 +82,12 @@ app.post('/buy', async (req, res) => {
       return res.status(400).json({ error: 'Faltan parámetros obligatorios (symbol, size, price para limit)' });
     }
 
+    symbol = symbol.toUpperCase();
     const symbolInfo = await getSymbolInfo(symbol);
     if (!symbolInfo) return res.status(400).json({ error: `No se encontró info del símbolo ${symbol}` });
 
     price = roundToIncrement(price, symbolInfo.priceIncrement);
+    size = Math.max(parseFloat(symbolInfo.baseMinSize), parseFloat(size));
     size = roundToIncrement(size, symbolInfo.baseIncrement);
 
     const usdtBalance = await getBalance('USDT');
@@ -107,6 +107,7 @@ app.post('/buy', async (req, res) => {
 
     const response = await kucoinRequest('POST', '/api/v1/orders', body);
     res.json(response.data);
+
   } catch (error) {
     res.status(500).json({ error: error.response?.data || error.message });
   }
@@ -119,13 +120,15 @@ app.post('/sell', async (req, res) => {
       return res.status(400).json({ error: 'Faltan parámetros obligatorios (symbol, size, price para limit)' });
     }
 
+    symbol = symbol.toUpperCase();
     const symbolInfo = await getSymbolInfo(symbol);
     if (!symbolInfo) return res.status(400).json({ error: `No se encontró info del símbolo ${symbol}` });
 
     price = roundToIncrement(price, symbolInfo.priceIncrement);
+    size = Math.max(parseFloat(symbolInfo.baseMinSize), parseFloat(size));
     size = roundToIncrement(size, symbolInfo.baseIncrement);
 
-    const baseCurrency = symbol.replace('-USDT', '');
+    const baseCurrency = symbol.split('-')[0];
     const assetBalance = await getBalance(baseCurrency);
     if (assetBalance < parseFloat(size)) {
       return res.status(400).json({ error: `Saldo insuficiente en ${baseCurrency}. Tienes ${assetBalance}, necesitas ${size}` });
@@ -142,11 +145,13 @@ app.post('/sell', async (req, res) => {
 
     const response = await kucoinRequest('POST', '/api/v1/orders', body);
     res.json(response.data);
+
   } catch (error) {
     res.status(500).json({ error: error.response?.data || error.message });
   }
 });
 
+// --- Iniciar servidor ---
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor escuchando en puerto ${PORT}`);
