@@ -10,28 +10,24 @@ const apiKey = process.env.KUCOIN_API_KEY;
 const apiSecret = process.env.KUCOIN_API_SECRET;
 const passphrase = process.env.KUCOIN_API_PASSPHRASE;
 
-// Función para generar firma
+// --- Funciones auxiliares ---
 function getSignature(timestamp, method, requestPath, body, secret) {
   const prehash = timestamp + method + requestPath + body;
   return crypto.createHmac('sha256', secret).update(prehash).digest('base64');
 }
 
-// Función para codificar passphrase
 function getPassphrase(secret, passphrase) {
   return crypto.createHmac('sha256', secret).update(passphrase).digest('base64');
 }
 
-// Obtener balance de una moneda
-async function getBalance(currency) {
+async function kucoinRequest(method, requestPath, body = '') {
   const timestamp = Date.now().toString();
-  const method = 'GET';
-  const requestPath = '/api/v1/accounts';
-  const body = '';
-
   const signature = getSignature(timestamp, method, requestPath, body, apiSecret);
   const encodedPassphrase = getPassphrase(apiSecret, passphrase);
 
-  const response = await axios.get('https://api.kucoin.com' + requestPath, {
+  const options = {
+    method,
+    url: 'https://api.kucoin.com' + requestPath,
     headers: {
       'KC-API-KEY': apiKey,
       'KC-API-SIGN': signature,
@@ -39,62 +35,69 @@ async function getBalance(currency) {
       'KC-API-PASSPHRASE': encodedPassphrase,
       'KC-API-KEY-VERSION': '2',
       'Content-Type': 'application/json'
-    }
-  });
+    },
+  };
 
+  if (method === 'GET') {
+    return axios(options);
+  } else {
+    options.data = body;
+    return axios(options);
+  }
+}
+
+async function getBalance(currency) {
+  const response = await kucoinRequest('GET', '/api/v1/accounts');
   const account = response.data.data.find(acc => acc.currency === currency);
   return account ? parseFloat(account.available) : 0;
 }
 
-// 📌 Endpoint para ver balances completos
+async function getSymbolInfo(symbol) {
+  const response = await kucoinRequest('GET', '/api/v1/symbols');
+  return response.data.data.find(s => s.symbol === symbol);
+}
+
+function roundToIncrement(value, increment) {
+  const inc = parseFloat(increment);
+  return (Math.floor(value / inc) * inc).toFixed(countDecimals(inc));
+}
+
+function countDecimals(num) {
+  if (Math.floor(num) === num) return 0;
+  return num.toString().split(".")[1]?.length || 0;
+}
+
+// --- Endpoints ---
 app.get('/balances', async (req, res) => {
   try {
-    const timestamp = Date.now().toString();
-    const method = 'GET';
-    const requestPath = '/api/v1/accounts';
-    const body = '';
-
-    const signature = getSignature(timestamp, method, requestPath, body, apiSecret);
-    const encodedPassphrase = getPassphrase(apiSecret, passphrase);
-
-    const response = await axios.get('https://api.kucoin.com' + requestPath, {
-      headers: {
-        'KC-API-KEY': apiKey,
-        'KC-API-SIGN': signature,
-        'KC-API-TIMESTAMP': timestamp,
-        'KC-API-PASSPHRASE': encodedPassphrase,
-        'KC-API-KEY-VERSION': '2',
-        'Content-Type': 'application/json'
-      }
-    });
-
+    const response = await kucoinRequest('GET', '/api/v1/accounts');
     res.json(response.data);
   } catch (error) {
-    res.status(500).json({ error: error.response ? error.response.data : error.message });
+    res.status(500).json({ error: error.response?.data || error.message });
   }
 });
 
-// 📌 Comprar con verificación de saldo USDT
 app.post('/buy', async (req, res) => {
   try {
-    const { symbol, price, size, type = 'limit' } = req.body;
+    let { symbol, price, size, type = 'limit' } = req.body;
     if (!symbol || !size || (type === 'limit' && !price)) {
       return res.status(400).json({ error: 'Faltan parámetros obligatorios (symbol, size, price para limit)' });
     }
 
-    // Verificar saldo USDT
+    const symbolInfo = await getSymbolInfo(symbol);
+    if (!symbolInfo) return res.status(400).json({ error: `No se encontró info del símbolo ${symbol}` });
+
+    price = roundToIncrement(price, symbolInfo.priceIncrement);
+    size = roundToIncrement(size, symbolInfo.baseIncrement);
+
     const usdtBalance = await getBalance('USDT');
     const cost = parseFloat(price) * parseFloat(size);
     if (usdtBalance < cost) {
       return res.status(400).json({ error: `Saldo insuficiente en USDT. Tienes ${usdtBalance}, necesitas ${cost}` });
     }
 
-    const timestamp = Date.now().toString();
-    const method = 'POST';
-    const requestPath = '/api/v1/orders';
-
     const body = JSON.stringify({
-      clientOid: Date.now().toString(), // ID único
+      clientOid: Date.now().toString(),
       symbol,
       side: 'buy',
       price,
@@ -102,48 +105,34 @@ app.post('/buy', async (req, res) => {
       type
     });
 
-    const signature = getSignature(timestamp, method, requestPath, body, apiSecret);
-    const encodedPassphrase = getPassphrase(apiSecret, passphrase);
-
-    const response = await axios.post('https://api.kucoin.com' + requestPath, body, {
-      headers: {
-        'KC-API-KEY': apiKey,
-        'KC-API-SIGN': signature,
-        'KC-API-TIMESTAMP': timestamp,
-        'KC-API-PASSPHRASE': encodedPassphrase,
-        'KC-API-KEY-VERSION': '2',
-        'Content-Type': 'application/json'
-      }
-    });
-
+    const response = await kucoinRequest('POST', '/api/v1/orders', body);
     res.json(response.data);
   } catch (error) {
-    res.status(500).json({ error: error.response ? error.response.data : error.message });
+    res.status(500).json({ error: error.response?.data || error.message });
   }
 });
 
-// 📌 Vender con verificación de saldo de la moneda
 app.post('/sell', async (req, res) => {
   try {
-    const { symbol, price, size, type = 'limit' } = req.body;
+    let { symbol, price, size, type = 'limit' } = req.body;
     if (!symbol || !size || (type === 'limit' && !price)) {
       return res.status(400).json({ error: 'Faltan parámetros obligatorios (symbol, size, price para limit)' });
     }
 
-    // Detectar moneda base
+    const symbolInfo = await getSymbolInfo(symbol);
+    if (!symbolInfo) return res.status(400).json({ error: `No se encontró info del símbolo ${symbol}` });
+
+    price = roundToIncrement(price, symbolInfo.priceIncrement);
+    size = roundToIncrement(size, symbolInfo.baseIncrement);
+
     const baseCurrency = symbol.replace('-USDT', '');
     const assetBalance = await getBalance(baseCurrency);
-
     if (assetBalance < parseFloat(size)) {
       return res.status(400).json({ error: `Saldo insuficiente en ${baseCurrency}. Tienes ${assetBalance}, necesitas ${size}` });
     }
 
-    const timestamp = Date.now().toString();
-    const method = 'POST';
-    const requestPath = '/api/v1/orders';
-
     const body = JSON.stringify({
-      clientOid: Date.now().toString(), // ID único
+      clientOid: Date.now().toString(),
       symbol,
       side: 'sell',
       price,
@@ -151,23 +140,10 @@ app.post('/sell', async (req, res) => {
       type
     });
 
-    const signature = getSignature(timestamp, method, requestPath, body, apiSecret);
-    const encodedPassphrase = getPassphrase(apiSecret, passphrase);
-
-    const response = await axios.post('https://api.kucoin.com' + requestPath, body, {
-      headers: {
-        'KC-API-KEY': apiKey,
-        'KC-API-SIGN': signature,
-        'KC-API-TIMESTAMP': timestamp,
-        'KC-API-PASSPHRASE': encodedPassphrase,
-        'KC-API-KEY-VERSION': '2',
-        'Content-Type': 'application/json'
-      }
-    });
-
+    const response = await kucoinRequest('POST', '/api/v1/orders', body);
     res.json(response.data);
   } catch (error) {
-    res.status(500).json({ error: error.response ? error.response.data : error.message });
+    res.status(500).json({ error: error.response?.data || error.message });
   }
 });
 
